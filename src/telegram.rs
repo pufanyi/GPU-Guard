@@ -16,6 +16,7 @@ pub struct Update {
 
 #[derive(Debug, Deserialize)]
 pub struct Message {
+    #[allow(dead_code)]
     pub message_id: i64,
     pub chat: Chat,
     pub text: Option<String>,
