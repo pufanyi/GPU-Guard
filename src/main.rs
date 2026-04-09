@@ -1,4 +1,5 @@
 mod bot;
+mod cli;
 mod config;
 mod gpu;
 mod monitor;
@@ -16,21 +17,35 @@ use tracing::{error, info, warn};
 use task_manager::TaskManager;
 use telegram::TelegramClient;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-
+fn main() -> anyhow::Result<()> {
+    // Config setup runs BEFORE tokio runtime so blocking reqwest works
     let config_path = std::env::args()
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("config.toml"));
 
-    let config = config::Config::load(&config_path)?;
-    info!("Loaded config from {}", config_path.display());
-    info!(
-        "Monitoring every {}s, GPU threshold: {:.1}%",
-        config.monitor.interval_secs, config.monitor.gpu_utilization_threshold
-    );
+    let config = config::Config::load_or_setup(&config_path)?;
+
+    // Now start the async runtime
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main(config))
+}
+
+async fn async_main(config: config::Config) -> anyhow::Result<()> {
+    // Log to file so it doesn't interfere with the interactive CLI
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("gpu-guard");
+    std::fs::create_dir_all(&log_dir)?;
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "gpu-guard.log");
+    tracing_subscriber::fmt()
+        .with_writer(file_appender)
+        .with_ansi(false)
+        .init();
+
+    info!("Config loaded");
 
     let tg = Arc::new(TelegramClient::new(config.telegram.bot_token.clone()));
     let task_mgr = Arc::new(Mutex::new(TaskManager::new(
@@ -42,7 +57,8 @@ async fn main() -> anyhow::Result<()> {
     let monitor_interval = Duration::from_secs(config.monitor.interval_secs);
     let monitor_config = config.monitor;
 
-    let monitor_handle = tokio::spawn({
+    // Background: GPU monitor
+    tokio::spawn({
         let tg = tg.clone();
         let chat_id = alert_chat_id.clone();
         async move {
@@ -50,7 +66,8 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let bot_handle = tokio::spawn({
+    // Background: Telegram bot
+    tokio::spawn({
         let tg = tg.clone();
         let tm = task_mgr.clone();
         async move {
@@ -58,18 +75,16 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let reaper_handle = tokio::spawn({
+    // Background: task reaper
+    tokio::spawn({
         let tm = task_mgr.clone();
         async move {
             reaper_loop(&tm).await;
         }
     });
 
-    tokio::select! {
-        r = monitor_handle => { error!("Monitor loop exited: {r:?}"); }
-        r = bot_handle => { error!("Bot loop exited: {r:?}"); }
-        r = reaper_handle => { error!("Reaper loop exited: {r:?}"); }
-    }
+    // Foreground: interactive CLI
+    cli::run(&task_mgr).await?;
 
     Ok(())
 }
@@ -84,9 +99,6 @@ async fn monitor_loop(
         match gpu::query_gpus() {
             Ok(gpus) => {
                 info!("Queried {} GPU(s)", gpus.len());
-                for g in &gpus {
-                    info!("  {g}");
-                }
                 if let Some(alert) = monitor::check_thresholds(&gpus, config) {
                     warn!("Threshold breached, sending alert");
                     if let Err(e) = tg.send_message(chat_id, &alert.message).await {
