@@ -12,3 +12,11 @@ gpu_utilization_threshold = 10.0
 [telegram]
 bot_token = ""
 chat_id = ""
+# Optional: restrict who can send commands (defaults to chat_id)
+# allowed_chat_ids = ["123456789"]
+
+[tasks]
+# Max concurrent managed tasks
+max_tasks = 16
+# Lines kept per task in the log ring buffer
+log_ring_size = 500
