@@ -1,0 +1,14 @@
+# GPU Guard Configuration
+
+[monitor]
+# Check interval in seconds
+interval_secs = 600
+# GPU utilization threshold (percentage, 0-100)
+# Alert when usage falls below this value
+gpu_utilization_threshold = 10.0
+# Memory utilization threshold (percentage, 0-100, optional)
+# memory_utilization_threshold = 10.0
+
+[telegram]
+bot_token = ""
+chat_id = ""
